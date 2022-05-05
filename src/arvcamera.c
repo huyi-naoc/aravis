@@ -63,6 +63,7 @@ static void arv_camera_get_integer_bounds_as_double (ArvCamera *camera, const ch
  * @ARV_CAMERA_VENDOR_POINT_GREY_FLIR: PointGrey / FLIR
  * @ARV_CAMERA_VENDOR_XIMEA: XIMEA GmbH
  * @ARV_CAMERA_VENDOR_MATRIX_VISION: Matrix Vision GmbH
+ * @ARV_CAMERA_VENDOR_IMPERX: ImperX
  */
 
 typedef enum {
@@ -74,7 +75,8 @@ typedef enum {
 	ARV_CAMERA_VENDOR_POINT_GREY_FLIR,
 	ARV_CAMERA_VENDOR_RICOH,
 	ARV_CAMERA_VENDOR_XIMEA,
-	ARV_CAMERA_VENDOR_MATRIX_VISION
+	ARV_CAMERA_VENDOR_MATRIX_VISION,
+        ARV_CAMERA_VENDOR_IMPERX
 } ArvCameraVendor;
 
 typedef enum {
@@ -88,7 +90,8 @@ typedef enum {
 	ARV_CAMERA_SERIES_POINT_GREY_FLIR,
 	ARV_CAMERA_SERIES_RICOH,
 	ARV_CAMERA_SERIES_XIMEA,
-	ARV_CAMERA_SERIES_MATRIX_VISION
+	ARV_CAMERA_SERIES_MATRIX_VISION,
+        ARV_CAMERA_SERIES_IMPERX
 } ArvCameraSeries;
 
 typedef struct {
@@ -537,7 +540,21 @@ arv_camera_get_binning (ArvCamera *camera, gint *dx, gint *dy, GError **error)
 void
 arv_camera_get_x_binning_bounds (ArvCamera *camera, gint *min, gint *max, GError **error)
 {
-	arv_camera_get_integer_bounds_as_gint (camera, "BinningHorizontal", min, max, error);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                GError *local_error = NULL;
+                guint n_x_binnings;
+                gint64 *available_binning = arv_camera_dup_available_enumerations(camera, "BinningHorizontal", &n_x_binnings, &local_error);
+                if (local_error == NULL) {
+                        *min = available_binning[0];
+                        *max = available_binning[n_x_binnings - 1];
+                        g_free (available_binning);
+                } else {
+                        g_propagate_error (error, local_error);
+                }
+        } else {
+	        arv_camera_get_integer_bounds_as_gint (camera, "BinningHorizontal", min, max, error);
+        }
 }
 
 /**
@@ -571,7 +588,22 @@ arv_camera_get_x_binning_increment (ArvCamera *camera, GError **error)
 void
 arv_camera_get_y_binning_bounds (ArvCamera *camera, gint *min, gint *max, GError **error)
 {
-	arv_camera_get_integer_bounds_as_gint (camera, "BinningVertical", min, max, error);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                GError *local_error = NULL;
+                guint n_y_binnings;
+                gint64 *available_binning = arv_camera_dup_available_enumerations(camera, "BinningVertical", &n_y_binnings, &local_error);
+                if (local_error == NULL) {
+                        *min = available_binning[0];
+                        *max = available_binning[n_y_binnings - 1];
+                        g_free (available_binning);
+                } else {
+                        g_propagate_error (error, local_error);
+                }
+        } else {
+                arv_camera_get_integer_bounds_as_gint (camera, "BinningVertical", min, max, error);
+        }
 }
 
 /**
@@ -1072,6 +1104,14 @@ arv_camera_set_frame_rate (ArvCamera *camera, double frame_rate, GError **error)
 			if (local_error == NULL)
 				arv_camera_set_float (camera, "AcquisitionFrameRate", frame_rate, &local_error);
 			break;
+                case ARV_CAMERA_VENDOR_IMPERX:
+                        arv_camera_set_boolean(camera, "ProgFrameTimeEnable", 1, &local_error);
+                        if (local_error == NULL) {
+                                guint64 us_per_frame;
+                                us_per_frame = 1. / frame_rate * 1000000;
+                                arv_camera_set_integer(camera, "ProgFrameTimeAbs", us_per_frame, &local_error);
+                        }
+                        break;
 		case ARV_CAMERA_VENDOR_DALSA:
 		case ARV_CAMERA_VENDOR_RICOH:
 		case ARV_CAMERA_VENDOR_XIMEA:
@@ -1131,6 +1171,20 @@ arv_camera_get_frame_rate (ArvCamera *camera, GError **error)
 				} else
 					return arv_camera_get_float (camera, "FPS", error);
 			}
+                case ARV_CAMERA_VENDOR_IMPERX:
+                        {
+                                gboolean prog_frame_time_enable;
+                                prog_frame_time_enable = arv_camera_get_boolean(camera, "ProgFrameTimeEnable", error);
+                                if (error == NULL) {
+                                        if (prog_frame_time_enable) {
+                                                guint64  us_per_frame = arv_camera_get_integer(camera, "ProgFrameTimeAbs", error);
+                                                return 1000000. / (double) us_per_frame;
+                                        } else {
+                                                return (double) arv_camera_get_integer(camera, "CurrentFrameRate", error);
+                                        }
+                                }
+                        }
+                        break;
 		case ARV_CAMERA_VENDOR_POINT_GREY_FLIR:
 		case ARV_CAMERA_VENDOR_DALSA:
 		case ARV_CAMERA_VENDOR_RICOH:
@@ -1208,6 +1262,16 @@ arv_camera_get_frame_rate_bounds (ArvCamera *camera, double *min, double *max, G
 		case ARV_CAMERA_VENDOR_PROSILICA:
 			arv_camera_get_float_bounds (camera, "AcquisitionFrameRateAbs", min, max, error);
 			break;
+                case ARV_CAMERA_VENDOR_IMPERX:
+                        {
+                                gint64 abs_min = 0, abs_max = 0;
+                                arv_camera_get_integer_bounds(camera, "ProgFrameTimeAbs", &abs_min, &abs_max, error);
+                                if (abs_min != 0)
+                                        *max = 1000000. / abs_min;
+                                if (abs_max != 0)
+                                        *min = 1000000. / abs_max;
+                        }
+                        break;
 		case ARV_CAMERA_VENDOR_POINT_GREY_FLIR:
 		case ARV_CAMERA_VENDOR_DALSA:
 		case ARV_CAMERA_VENDOR_RICOH:
@@ -1479,6 +1543,7 @@ arv_camera_set_exposure_time (ArvCamera *camera, double exposure_time_us, GError
 				arv_camera_set_integer (camera, "ExposureTimeRaw", 1, &local_error);
 			break;
 		case ARV_CAMERA_SERIES_RICOH:
+                case ARV_CAMERA_SERIES_IMPERX:
 			arv_camera_set_integer (camera, "ExposureTimeRaw", exposure_time_us, &local_error);
 			break;
 		case ARV_CAMERA_SERIES_XIMEA:
@@ -1523,6 +1588,7 @@ arv_camera_get_exposure_time (ArvCamera *camera, GError **error)
 		case ARV_CAMERA_SERIES_XIMEA:
 			return arv_camera_get_integer (camera,"ExposureTime", error);
 		case ARV_CAMERA_SERIES_RICOH:
+                case ARV_CAMERA_SERIES_IMPERX:
 			return arv_camera_get_integer (camera,"ExposureTimeRaw", error);
 		default:
 			return arv_camera_get_float (camera,
@@ -1569,6 +1635,7 @@ arv_camera_get_exposure_time_bounds (ArvCamera *camera, double *min, double *max
 			arv_camera_get_integer_bounds_as_double (camera, "ExposureTime", min, max, error);
 			break;
 		case ARV_CAMERA_SERIES_RICOH:
+                case ARV_CAMERA_SERIES_IMPERX:
 			arv_camera_get_integer_bounds_as_double (camera, "ExposureTimeRaw", min, max, error);
 			break;
 		default:
@@ -1595,7 +1662,16 @@ arv_camera_get_exposure_time_bounds (ArvCamera *camera, double *min, double *max
 void
 arv_camera_set_exposure_time_auto (ArvCamera *camera, ArvAuto auto_mode, GError **error)
 {
-	arv_camera_set_string (camera, "ExposureAuto", arv_auto_to_string (auto_mode), error);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                if (auto_mode != ARV_AUTO_OFF)
+                        arv_camera_set_boolean(camera, "AecEnable", TRUE, error);
+                else
+                        arv_camera_set_boolean(camera, "AecEnable", FALSE, error);
+        }
+        else
+                arv_camera_set_string (camera, "ExposureAuto", arv_auto_to_string (auto_mode), error);
 }
 
 /**
@@ -1611,9 +1687,19 @@ arv_camera_set_exposure_time_auto (ArvCamera *camera, ArvAuto auto_mode, GError 
 ArvAuto
 arv_camera_get_exposure_time_auto (ArvCamera *camera, GError **error)
 {
-	g_return_val_if_fail (ARV_IS_CAMERA (camera), ARV_AUTO_OFF);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
 
-	return arv_auto_from_string (arv_camera_get_string (camera, "ExposureAuto", error));
+        g_return_val_if_fail (ARV_IS_CAMERA (camera), ARV_AUTO_OFF);
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                gboolean aec_enable = arv_camera_get_boolean (camera, "AecEnable", error);
+                if (aec_enable)
+                        return ARV_AUTO_ONCE;
+                else
+                        return ARV_AUTO_OFF;
+        }
+        else
+                return arv_auto_from_string (arv_camera_get_string (camera, "ExposureAuto", error));
 }
 
 /*
@@ -1744,7 +1830,16 @@ arv_camera_get_gain_bounds (ArvCamera *camera, double *min, double *max, GError 
 void
 arv_camera_set_gain_auto (ArvCamera *camera, ArvAuto auto_mode, GError **error)
 {
-	arv_camera_set_string (camera, "GainAuto", arv_auto_to_string (auto_mode), error);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                if (auto_mode != ARV_AUTO_OFF)
+                        arv_camera_set_boolean(camera, "AgcEnable", TRUE, error);
+                else
+                        arv_camera_set_boolean(camera, "AgcEnable", FALSE, error);
+        }
+        else
+                arv_camera_set_string (camera, "GainAuto", arv_auto_to_string (auto_mode), error);
 }
 
 /**
@@ -1760,9 +1855,19 @@ arv_camera_set_gain_auto (ArvCamera *camera, ArvAuto auto_mode, GError **error)
 ArvAuto
 arv_camera_get_gain_auto (ArvCamera *camera, GError **error)
 {
-	g_return_val_if_fail (ARV_IS_CAMERA (camera), ARV_AUTO_OFF);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
 
-	return arv_auto_from_string (arv_camera_get_string (camera, "GainAuto", error));
+        g_return_val_if_fail (ARV_IS_CAMERA (camera), ARV_AUTO_OFF);
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                gboolean aec_enable = arv_camera_get_boolean (camera, "AgcEnable", error);
+                if (aec_enable)
+                        return ARV_AUTO_ONCE;
+                else
+                        return ARV_AUTO_OFF;
+        }
+        else
+                return arv_auto_from_string (arv_camera_get_string (camera, "GainAuto", error));
 }
 
 /**
@@ -1972,6 +2077,7 @@ arv_camera_is_frame_rate_available (ArvCamera *camera, GError **error)
 		case ARV_CAMERA_VENDOR_BASLER:
 	        case ARV_CAMERA_VENDOR_XIMEA:
 		case ARV_CAMERA_VENDOR_MATRIX_VISION:
+                case ARV_CAMERA_VENDOR_IMPERX:
 		case ARV_CAMERA_VENDOR_UNKNOWN:
 			return arv_camera_is_feature_available (camera,
 								priv->has_acquisition_frame_rate ?
@@ -2002,6 +2108,7 @@ arv_camera_is_exposure_time_available (ArvCamera *camera, GError **error)
 		case ARV_CAMERA_VENDOR_XIMEA:
 			return arv_camera_is_feature_available (camera, "ExposureTime", error);
 		case ARV_CAMERA_VENDOR_RICOH:
+                case ARV_CAMERA_VENDOR_IMPERX:
 			return arv_camera_is_feature_available (camera, "ExposureTimeRaw", error);
 		default:
 			return arv_camera_is_feature_available (camera,
@@ -2067,7 +2174,14 @@ arv_camera_is_gain_available (ArvCamera *camera, GError **error)
 gboolean
 arv_camera_is_gain_auto_available (ArvCamera *camera, GError **error)
 {
-	return arv_camera_is_feature_available (camera, "GainAuto", error);
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
+
+        g_return_val_if_fail (ARV_IS_CAMERA (camera), FALSE);
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX)
+                return arv_camera_is_feature_available (camera, "AgcEnable", error);
+        else
+                return arv_camera_is_feature_available (camera, "GainAuto", error);
 }
 
 /**
@@ -3520,7 +3634,10 @@ arv_camera_constructed (GObject *object)
 	} else if (g_strcmp0 (vendor_name, "MATRIX VISION GmbH") == 0) {
 		vendor = ARV_CAMERA_VENDOR_MATRIX_VISION;
 		series = ARV_CAMERA_SERIES_MATRIX_VISION;
-	} else {
+	} else if (g_strcmp0 (vendor_name, "Imperx, inc.") == 0) {
+                vendor = ARV_CAMERA_VENDOR_IMPERX;
+                series = ARV_CAMERA_SERIES_IMPERX;
+        } else {
 		vendor = ARV_CAMERA_VENDOR_UNKNOWN;
 		series = ARV_CAMERA_SERIES_UNKNOWN;
 	}
