@@ -974,6 +974,7 @@ arv_camera_get_frame_count_bounds (ArvCamera *camera, gint64 *min, gint64 *max, 
 static void
 arv_camera_disable_all_triggers (ArvCamera *camera, GError **error)
 {
+        ArvCameraPrivate *priv = arv_camera_get_instance_private (camera);
 	GError *local_error = NULL;
         const char **triggers = NULL;
         guint n_triggers;
@@ -981,6 +982,13 @@ arv_camera_disable_all_triggers (ArvCamera *camera, GError **error)
 
 	g_return_if_fail (ARV_IS_CAMERA (camera));
 
+
+        if (priv->vendor == ARV_CAMERA_VENDOR_IMPERX) {
+                arv_camera_set_string (camera, "TriggerMode", "Off", &local_error);
+	        if (local_error != NULL)
+		        g_propagate_error (error, local_error);
+                return;
+        }
         triggers = arv_camera_dup_available_enumerations_as_strings (camera, "TriggerSelector", &n_triggers,
                                                                      &local_error);
 
@@ -1017,6 +1025,7 @@ arv_camera_set_frame_rate (ArvCamera *camera, double frame_rate, GError **error)
 	ArvGcNode *feature;
 	double minimum;
 	double maximum;
+                            
 
 	g_return_if_fail (ARV_IS_CAMERA (camera));
 
@@ -2071,13 +2080,14 @@ arv_camera_is_frame_rate_available (ArvCamera *camera, GError **error)
 			return arv_camera_is_feature_available (camera, "AcquisitionFrameRateAbs", error);
 		case ARV_CAMERA_VENDOR_TIS:
 			return arv_camera_is_feature_available (camera, "FPS", error);
+                case ARV_CAMERA_VENDOR_IMPERX:
+			return arv_camera_is_feature_available (camera, "ProgFrameTimeAbs", error);
 		case ARV_CAMERA_VENDOR_POINT_GREY_FLIR:
 		case ARV_CAMERA_VENDOR_DALSA:
 		case ARV_CAMERA_VENDOR_RICOH:
 		case ARV_CAMERA_VENDOR_BASLER:
 	        case ARV_CAMERA_VENDOR_XIMEA:
 		case ARV_CAMERA_VENDOR_MATRIX_VISION:
-                case ARV_CAMERA_VENDOR_IMPERX:
 		case ARV_CAMERA_VENDOR_UNKNOWN:
 			return arv_camera_is_feature_available (camera,
 								priv->has_acquisition_frame_rate ?
